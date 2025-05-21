@@ -64,6 +64,7 @@ if __name__ == "__main__":
 
     # Get a list of all available Bluetooth adapters
     adapters = nx.get_available_adapters()
+    print("adapters:", adapters)
     # Prepare a list to store the indexes of the
     # created controllers.
     controller_idxs = []
@@ -120,3 +121,4 @@ if __name__ == "__main__":
     time.sleep(2)
 
     print("Exiting...")
+    nx.remove_controller(controller_idx)

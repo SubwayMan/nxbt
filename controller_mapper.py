@@ -63,6 +63,11 @@ class ControllerMapper:
         # Input processing state
         self.running = False
         self.input_thread = None
+        self.input_handler_thread = None
+        
+        # Thread-safe input state
+        self.input_lock = threading.Lock()
+        self.pending_input = self.nx.create_input_packet()
         
     async def connect_controller(self, controller_type: int = PRO_CONTROLLER) -> int:
         """Connect a controller.
@@ -95,54 +100,52 @@ class ControllerMapper:
             print(f"Event: {event.ev_type} {event.code} = {event.state}")
             return
             
-        if event.ev_type == 'Key':  # Button press/release
-            if event.code in self.button_mappings:
-                nxbt_button = self.button_mappings[event.code]
-                self.current_input[nxbt_button] = event.state == 1
-                if self.debug:
-                    self.logger.debug(f"Button {event.code} -> {nxbt_button}: {event.state == 1}")
-                self.nx.set_controller_input(self.controller_idx, self.current_input)
-                
-        elif event.ev_type == 'Absolute':  # Stick/trigger movement
-            # Handle triggers
-            if event.code in self.trigger_mappings:
-                button = self.trigger_mappings[event.code]
-                # Normalize trigger value from 0-255 to 0-100
-                value = int((event.state / 255) * 100)
-                # Set the button state based on trigger value
-                self.current_input[button] = value > 50  # Consider pressed if more than halfway
-                if self.debug:
-                    self.logger.debug(f"Trigger {event.code} -> {button}: {value > 50}")
-                self.nx.set_controller_input(self.controller_idx, self.current_input)
-                return
-                
-            # Handle D-pad
-            if event.code == 'ABS_HAT0X':
-                self.current_input[Buttons.DPAD_LEFT] = event.state == -1
-                self.current_input[Buttons.DPAD_RIGHT] = event.state == 1
-                if self.debug:
-                    self.logger.debug(f"D-pad X: left={event.state == -1}, right={event.state == 1}")
-            elif event.code == 'ABS_HAT0Y':
-                self.current_input[Buttons.DPAD_UP] = event.state == -1
-                self.current_input[Buttons.DPAD_DOWN] = event.state == 1
-                if self.debug:
-                    self.logger.debug(f"D-pad Y: up={event.state == -1}, down={event.state == 1}")
-            # Handle sticks
-            elif event.code in self.stick_mappings:
-                stick_name, axis = self.stick_mappings[event.code]
-                # Normalize stick values from -32768/32767 to -100/100
-                value = int((event.state / 32767) * 100)
-                # Invert Y axis values
-                if axis == 'y':
-                    value = -value
-                if axis == 'x':
-                    self.current_input[stick_name]['X_VALUE'] = value
-                else:
-                    self.current_input[stick_name]['Y_VALUE'] = value
-                
-                if self.debug:
-                    self.logger.debug(f"Stick {event.code} -> {stick_name} {axis}: {value}")
-                self.nx.set_controller_input(self.controller_idx, self.current_input)
+        with self.input_lock:
+            if event.ev_type == 'Key':  # Button press/release
+                if event.code in self.button_mappings:
+                    nxbt_button = self.button_mappings[event.code]
+                    self.pending_input[nxbt_button] = event.state == 1
+                    if self.debug:
+                        self.logger.debug(f"Button {event.code} -> {nxbt_button}: {event.state == 1}")
+                    
+            elif event.ev_type == 'Absolute':  # Stick/trigger movement
+                # Handle triggers
+                if event.code in self.trigger_mappings:
+                    button = self.trigger_mappings[event.code]
+                    # Normalize trigger value from 0-255 to 0-100
+                    value = int((event.state / 255) * 100)
+                    # Set the button state based on trigger value
+                    self.pending_input[button] = value > 50  # Consider pressed if more than halfway
+                    if self.debug:
+                        self.logger.debug(f"Trigger {event.code} -> {button}: {value > 50}")
+                    return
+                    
+                # Handle D-pad
+                if event.code == 'ABS_HAT0X':
+                    self.pending_input[Buttons.DPAD_LEFT] = event.state == -1
+                    self.pending_input[Buttons.DPAD_RIGHT] = event.state == 1
+                    if self.debug:
+                        self.logger.debug(f"D-pad X: left={event.state == -1}, right={event.state == 1}")
+                elif event.code == 'ABS_HAT0Y':
+                    self.pending_input[Buttons.DPAD_UP] = event.state == -1
+                    self.pending_input[Buttons.DPAD_DOWN] = event.state == 1
+                    if self.debug:
+                        self.logger.debug(f"D-pad Y: up={event.state == -1}, down={event.state == 1}")
+                # Handle sticks
+                elif event.code in self.stick_mappings:
+                    stick_name, axis = self.stick_mappings[event.code]
+                    # Normalize stick values from -32768/32767 to -100/100
+                    value = int((event.state / 32767) * 100)
+                    # Invert Y axis values
+                    if axis == 'y':
+                        value = -value
+                    if axis == 'x':
+                        self.pending_input[stick_name]['X_VALUE'] = value
+                    else:
+                        self.pending_input[stick_name]['Y_VALUE'] = value
+                    
+                    if self.debug:
+                        self.logger.debug(f"Stick {event.code} -> {stick_name} {axis}: {value}")
     
     def _input_loop(self):
         """Main input processing loop."""
@@ -155,15 +158,41 @@ class ControllerMapper:
                 self.logger.error(f"Error processing input: {e}")
                 time.sleep(0.1)  # Prevent tight loop on error
     
+    def _input_handler_loop(self):
+        """Input handler loop that runs at 120Hz and sends batched inputs."""
+        while self.running:
+            try:
+                with self.input_lock:
+                    # Copy pending input to current input
+                    self.current_input = self.pending_input.copy()
+                
+                # Send the input packet
+                if self.controller_idx is not None:
+                    self.nx.set_controller_input(self.controller_idx, self.current_input)
+                
+                # Sleep for 1/120th of a second (120Hz)
+                time.sleep(1/120)
+                
+            except Exception as e:
+                self.logger.error(f"Error in input handler: {e}")
+                time.sleep(1/120)  # Continue at 120Hz even on error
+    
     def start_input_processing(self):
         """Start processing physical controller inputs."""
         if self.input_thread is not None:
             return
             
         self.running = True
+        
+        # Start input processing thread
         self.input_thread = threading.Thread(target=self._input_loop)
         self.input_thread.daemon = True
         self.input_thread.start()
+        
+        # Start input handler thread (120Hz)
+        self.input_handler_thread = threading.Thread(target=self._input_handler_loop)
+        self.input_handler_thread.daemon = True
+        self.input_handler_thread.start()
         
     def stop_input_processing(self):
         """Stop processing physical controller inputs."""
@@ -171,6 +200,9 @@ class ControllerMapper:
         if self.input_thread is not None:
             self.input_thread.join()
             self.input_thread = None
+        if self.input_handler_thread is not None:
+            self.input_handler_thread.join()
+            self.input_handler_thread = None
             
     async def cleanup(self) -> None:
         """Clean up the controller."""

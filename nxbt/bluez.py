@@ -142,7 +142,7 @@ def toggle_clean_bluez(toggle):
     _run_command(["systemctl", "daemon-reload"])
 
     # Reload the bluetooth service with input disabled
-    _run_command(["systemctl", "restart", "bluetooth"])
+    _run_command(["systemctl", "restart", "bluetooth.service"])
 
     # Kill a bit of time here to ensure all services have restarted
     time.sleep(0.5)

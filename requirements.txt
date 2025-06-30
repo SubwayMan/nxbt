@@ -1,0 +1,13 @@
+aioconsole==0.8.1
+blessed==1.21.0
+crc8==0.2.1
+dbus-python==1.4.0
+evdev==1.9.2
+hid==1.0.7
+inputs==0.5
+psutil==7.0.0
+pynput==1.8.1
+python-xlib==0.33
+setuptools==80.4.0
+six==1.17.0
+wcwidth==0.2.13
